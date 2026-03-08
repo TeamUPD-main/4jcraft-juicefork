@@ -1,3 +1,5 @@
+
+// TODO: ADD BETTER COMMENTS.
 #include "4J_Render.h"
 #include <cstring>
 #include <cstdlib>  // getenv
@@ -10,6 +12,9 @@
 #include <cstdio>
 #include <cmath>
 #include <pthread.h>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 
 C4JRender RenderManager;
 
@@ -39,26 +44,22 @@ static pthread_mutex_t s_sharedCtxMutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t s_mainThread;
 static bool s_mainThreadSet = false;
 
+// viewport go brr
+static void onFramebufferResize(GLFWwindow * /*win*/, int w, int h)
+{
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    s_windowWidth  = w;
+    s_windowHeight = h;
+    ::glViewport(0, 0, w, h);
+}
+
 void C4JRender::Initialise()
 {
-#if defined(__linux__) && (GLFW_VERSION_MAJOR > 3 || (GLFW_VERSION_MAJOR == 3 && GLFW_VERSION_MINOR >= 4))
-    // If the session is a native Wayland session, tell GLFW to use the Wayland
-    // backend instead of falling back to XWayland.  This enables proper cursor
-    // confine-and-hide (zwp_confined_pointer_v1 + zwp_relative_pointer_v1) which
-    // is required for correct first-person mouse input on Wayland compositors.
-    if (getenv("WAYLAND_DISPLAY")) {
-        glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
-        fprintf(stderr, "[4J_Render] Wayland session detected — requesting native Wayland backend\n");
-    }
-#endif
-
     if (!glfwInit()) {
         fprintf(stderr, "[4J_Render] Failed to initialise GLFW\n");
         return;
     }
-
-    // Resolve window dimensions: use caller-requested size, or fall back to
-    // the primary monitor's native resolution so the window fits any display.
     GLFWmonitor *primaryMonitor = glfwGetPrimaryMonitor();
     const GLFWvidmode *mode = primaryMonitor ? glfwGetVideoMode(primaryMonitor) : nullptr;
 
@@ -76,6 +77,10 @@ void C4JRender::Initialise()
     // opengl 2.1!!!
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+    glfwWindowHint(GLFW_DEPTH_BITS, 24);
+    glfwWindowHint(GLFW_STENCIL_BITS, 8);
+    glfwWindowHint(GLFW_DEPTH_BITS, 24);
+    glfwWindowHint(GLFW_STENCIL_BITS, 8);
 
     GLFWmonitor *fsMonitor = s_fullscreen ? primaryMonitor : nullptr;
     s_window = glfwCreateWindow(s_windowWidth, s_windowHeight,
@@ -88,6 +93,9 @@ void C4JRender::Initialise()
 
     glfwMakeContextCurrent(s_window);
     glfwSwapInterval(1);  // vsync
+
+    // Keep viewport in sync with OS-driven window resizes.
+    glfwSetFramebufferSizeCallback(s_window, onFramebufferResize);
 
     // init opengl
     ::glEnable(GL_TEXTURE_2D);
@@ -301,9 +309,7 @@ void C4JRender::DrawVertices(ePrimitiveType PrimitiveType, int count,
     GLenum mode = mapPrimType((int)PrimitiveType);
 
     if (vType == VERTEX_TYPE_COMPRESSED) {
-        // Compact terrain vertex: 8 × int16_t = 16 bytes per vertex
-        // Layout: [x*1024, y*1024, z*1024, RGB565-32768, u*8192, v*8192, tex2u, tex2v]
-        // Always use glBegin/glEnd — works correctly both inside and outside display lists.
+        // NO NEED TO REWRITE IT ALL YAY
         int16_t *sdata = (int16_t *)dataIn;
         ::glBegin(mode);
         for (int i = 0; i < count; i++) {
@@ -330,14 +336,6 @@ void C4JRender::DrawVertices(ePrimitiveType PrimitiveType, int count,
         }
         ::glEnd();
     } else {
-        // Standard (non-compact) vertex: 8 × int32 = 32 bytes per vertex
-        // Layout: [x(f), y(f), z(f), u(f), v(f), color(RGBA packed), normal, tex2]
-        // Color byte-order fix for little-endian (x86/x64):
-        //   Console code stores color as int col = (r<<24)|(g<<16)|(b<<8)|a
-        //   In little-endian memory the bytes are: [a, b, g, r] at increasing addresses.
-        //   Read as: col[3]=r, col[2]=g, col[1]=b, col[0]=a.
-        // Always use glBegin/glEnd — safe for both display-list compilation and immediate mode.
-        // (glVertexPointer/glDrawArrays inside glNewList record a stale pointer, not the data.)
         unsigned int *idata = (unsigned int *)dataIn;
         ::glBegin(mode);
         for (int i = 0; i < count; i++) {
@@ -435,12 +433,6 @@ void C4JRender::TextureBind(int idx)
 
 void C4JRender::TextureBindVertex(int idx)
 {
-    // No-op on desktop OpenGL. On consoles this binds a lightmap to the vertex shader
-    // sampler. On desktop GL 2.1 fixed-function there is no vertex texture concept;
-    // lighting is handled via vertex colors. Binding anything here OVERRIDES GL_TEXTURE0
-    // after the call (because the game calls glTexParameteri on whatever is active),
-    // causing the terrain atlas filter params to be corrupted or the lightmap to appear
-    // on terrain instead of the atlas. Leave it as a no-op.
     (void)idx;
 }
 
@@ -463,13 +455,6 @@ void C4JRender::TextureData(int width, int height, void *data, int level,
                    width, height, 0,
                    GL_RGBA, GL_UNSIGNED_BYTE, data);
 
-    // For the base level (0), force the texture to be non-mipmapped and pixel-crisp.
-    // glGenerateMipmap() was previously called here as a "safety net", but on Mesa/Nvidia
-    // drivers it silently resets GL_TEXTURE_MIN_FILTER to the OpenGL spec default
-    // (GL_NEAREST_MIPMAP_LINEAR), overriding the GL_NEAREST set before this call.
-    // Fix: set GL_TEXTURE_MAX_LEVEL=0 (only sample level 0) and re-enforce GL_NEAREST.
-    // The game manually uploads explicit mip levels 1..N-1 after this call anyway,
-    // so we don't need glGenerateMipmap() as a completeness safety net.
     if (level == 0) {
         ::glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
         ::glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -495,106 +480,62 @@ void C4JRender::TextureDynamicUpdateEnd()   {}
 
 void C4JRender::Tick() {}
 void C4JRender::UpdateGamma(unsigned short) {}
-// really don't know if this is nessesary but didn't find any other functions to load images properly as a png..
-// im sorry.
-#ifdef __linux__
-#include <png.h>
-#include <stdio.h>
-#include <string.h>
 
-static HRESULT LoadPNGFromRows(png_structp png, png_infop info, D3DXIMAGE_INFO *pSrcInfo, int **ppDataOut)
+// This sucks, but at least better than libpng
+static HRESULT LoadFromSTB(unsigned char* data, int width, int height, D3DXIMAGE_INFO* pSrcInfo, int** ppDataOut)
 {
-    int width = png_get_image_width(png, info);
-    int height = png_get_image_height(png, info);
-    png_byte color_type = png_get_color_type(png, info);
-    png_byte bit_depth = png_get_bit_depth(png, info);
+    int pixelCount = width * height;
+    int* pixels = new int[pixelCount];
 
-    if (bit_depth == 16) png_set_strip_16(png);
-    if (color_type == PNG_COLOR_TYPE_PALETTE) png_set_palette_to_rgb(png);
-    if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8) png_set_expand_gray_1_2_4_to_8(png);
-    if (png_get_valid(png, info, PNG_INFO_tRNS)) png_set_tRNS_to_alpha(png);
-    if (color_type == PNG_COLOR_TYPE_RGB || color_type == PNG_COLOR_TYPE_GRAY || color_type == PNG_COLOR_TYPE_PALETTE)
-        png_set_filler(png, 0xFF, PNG_FILLER_AFTER);
-    if (color_type == PNG_COLOR_TYPE_GRAY || color_type == PNG_COLOR_TYPE_GRAY_ALPHA)
-        png_set_gray_to_rgb(png);
-
-    png_read_update_info(png, info);
-
-    unsigned char *buf = new unsigned char[width * height * 4];
-    png_bytep *rows = new png_bytep[height];
-    for (int y = 0; y < height; y++)
-        rows[y] = buf + y * width * 4;
-    png_read_image(png, rows);
-    delete[] rows;
-    // considering i worked on previous projects with raw pngs,,,,, 
-    int *pixels = new int[width * height];
-    for (int i = 0; i < width * height; i++)
+    for (int i = 0; i < pixelCount; i++)
     {
-        unsigned char r = buf[i * 4 + 0];
-        unsigned char g = buf[i * 4 + 1];
-        unsigned char b = buf[i * 4 + 2];
-        unsigned char a = buf[i * 4 + 3];
+        unsigned char r = data[i * 4 + 0];
+        unsigned char g = data[i * 4 + 1];
+        unsigned char b = data[i * 4 + 2];
+        unsigned char a = data[i * 4 + 3];
+
+        //pixels[i] = (a << 24) | (b << 16) | (g << 8) | r;
         pixels[i] = (a << 24) | (r << 16) | (g << 8) | b;
     }
-    delete[] buf;
 
-    pSrcInfo->Width = width;
-    pSrcInfo->Height = height;
+    if (pSrcInfo)
+    {
+        pSrcInfo->Width = width;
+        pSrcInfo->Height = height;
+    }
+
     *ppDataOut = pixels;
     return S_OK;
 }
 
-HRESULT C4JRender::LoadTextureData(const char *szFilename, D3DXIMAGE_INFO *pSrcInfo, int **ppDataOut)
+HRESULT C4JRender::LoadTextureData(const char* szFilename, D3DXIMAGE_INFO* pSrcInfo, int** ppDataOut)
 {
-    FILE *fp = fopen(szFilename, "rb");
-    if (!fp) return E_FAIL;
+    int width, height, channels;
 
-    png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-    if (!png) { fclose(fp); return E_FAIL; }
-    png_infop info = png_create_info_struct(png);
-    if (!info) { png_destroy_read_struct(&png, NULL, NULL); fclose(fp); return E_FAIL; }
-    if (setjmp(png_jmpbuf(png))) { png_destroy_read_struct(&png, &info, NULL); fclose(fp); return E_FAIL; }
+    unsigned char* data = stbi_load(szFilename, &width, &height, &channels, 4);
+    if (!data)
+        return E_FAIL;
 
-    png_init_io(png, fp);
-    png_read_info(png, info);
+    HRESULT hr = LoadFromSTB(data, width, height, pSrcInfo, ppDataOut);
 
-    HRESULT hr = LoadPNGFromRows(png, info, pSrcInfo, ppDataOut);
-    png_destroy_read_struct(&png, &info, NULL);
-    fclose(fp);
+    stbi_image_free(data);
     return hr;
 }
 
-struct PNGMemReader { const unsigned char *data; png_size_t pos; png_size_t size; };
-
-static void png_mem_read(png_structp png, png_bytep out, png_size_t len)
+HRESULT C4JRender::LoadTextureData(BYTE* pbData, DWORD dwBytes, D3DXIMAGE_INFO* pSrcInfo, int** ppDataOut)
 {
-    PNGMemReader *r = (PNGMemReader *)png_get_io_ptr(png);
-    if (r->pos + len > r->size) len = r->size - r->pos;
-    memcpy(out, r->data + r->pos, len);
-    r->pos += len;
-}
+    int width, height, channels;
 
-HRESULT C4JRender::LoadTextureData(BYTE *pbData, DWORD dwBytes, D3DXIMAGE_INFO *pSrcInfo, int **ppDataOut)
-{
-    png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-    if (!png) return E_FAIL;
-    png_infop info = png_create_info_struct(png);
-    if (!info) { png_destroy_read_struct(&png, NULL, NULL); return E_FAIL; }
-    if (setjmp(png_jmpbuf(png))) { png_destroy_read_struct(&png, &info, NULL); return E_FAIL; }
+    unsigned char* data = stbi_load_from_memory(pbData, dwBytes, &width, &height, &channels, 4);
+    if (!data)
+        return E_FAIL;
 
-    PNGMemReader reader = { pbData, 0, dwBytes };
-    png_set_read_fn(png, &reader, png_mem_read);
-    png_read_info(png, info);
+    HRESULT hr = LoadFromSTB(data, width, height, pSrcInfo, ppDataOut);
 
-    HRESULT hr = LoadPNGFromRows(png, info, pSrcInfo, ppDataOut);
-    png_destroy_read_struct(&png, &info, NULL);
+    stbi_image_free(data);
     return hr;
 }
 
-#else
-HRESULT C4JRender::LoadTextureData(const char *szFilename, D3DXIMAGE_INFO *pSrcInfo, int **ppDataOut) { return S_OK; }
-HRESULT C4JRender::LoadTextureData(BYTE *pbData, DWORD dwBytes, D3DXIMAGE_INFO *pSrcInfo, int **ppDataOut) { return S_OK; }
-#endif
 HRESULT C4JRender::SaveTextureData(const char *szFilename, D3DXIMAGE_INFO *pSrcInfo, int *ppDataOut) { return S_OK; }
 HRESULT C4JRender::SaveTextureDataToMemory(void *pOutput, int outputCapacity, int *outputLength, int width, int height, int *ppDataIn) { return S_OK; }
 void C4JRender::TextureGetStats() {}

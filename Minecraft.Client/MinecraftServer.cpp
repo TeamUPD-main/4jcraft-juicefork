@@ -41,13 +41,13 @@
 #include "../Minecraft.World/Level/Storage/SparseDataStorage.h"
 #include "../Minecraft.World/IO/Streams/Compression.h"
 #ifdef _XBOX
-#include "Build/Common/XUI/XUI_DebugSetCamera.h"
+#include "../Common/XUI/XUI_DebugSetCamera.h"
 #endif
 #include "Platform/PS3/PS3Extras/ShutdownManager.h"
 #include "Network/ServerCommandDispatcher.h"
 #include "../Minecraft.World/WorldGen/Biomes/BiomeSource.h"
 #include "Network/PlayerChunkMap.h"
-#include "Build/Common/Telemetry/TelemetryManager.h"
+#include "../Common/Telemetry/TelemetryManager.h"
 
 #define DEBUG_SERVER_DONT_SPAWN_MOBS 0
 
@@ -262,7 +262,7 @@ bool MinecraftServer::initServer(__int64 seed, NetworkGameInitData *initData, DW
 		// 4J delete passed in save data now - this is only required for the tutorial which is loaded by passing data directly in rather than using the storage manager
 		if( initData->saveData )
 		{
-			delete initData->saveData->data;
+			delete[] (unsigned char*)initData->saveData->data;
 			initData->saveData->data = 0;
 			initData->saveData->fileSize = 0;
 		}

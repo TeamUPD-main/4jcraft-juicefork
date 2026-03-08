@@ -10,7 +10,7 @@
 #include "../../../Minecraft.Client/Level/ServerLevel.h"
 #include "../../Headers/net.minecraft.world.level.h"
 #include "../../Level/LevelData.h"
-#include "../../../Minecraft.Client/Build/Common/GameRules/LevelGenerationOptions.h"
+#include "../../../Common/GameRules/LevelGenerationOptions.h"
 #include "../../Headers/net.minecraft.world.level.chunk.storage.h"
 
 #define RESERVE_ALLOCATION  MEM_RESERVE
@@ -359,7 +359,7 @@ void ConsoleSaveFileSplit::RegionFileReference::ReleaseCompressed()
 //	app.DebugPrintf("Releasing compressed data for region file from 0x%.8x\n", fileEntry->data.regionIndex );
 	free(dataCompressed);
 	dataCompressed = NULL;
-	dataCompressedSize = NULL;
+	dataCompressedSize = 0;
 }
 
 FileEntry *ConsoleSaveFileSplit::GetRegionFileEntry(unsigned int regionIndex)
@@ -463,7 +463,7 @@ void ConsoleSaveFileSplit::_init(const wstring &fileName, LPVOID pvSaveData, DWO
 		unsigned char *regionDataCompressed;
 		unsigned int regionSizeCompressed;
 
-		StorageManager.GetSubfileDetails(i, &regionIndex, &regionDataCompressed, &regionSizeCompressed);
+		StorageManager.GetSubfileDetails(i, (int*)&regionIndex, (void**)&regionDataCompressed, &regionSizeCompressed);
 
 		RegionFileReference *regionFileRef = new RegionFileReference(i, regionIndex, regionSizeCompressed, regionDataCompressed);
 		if( regionSizeCompressed > 0 )
